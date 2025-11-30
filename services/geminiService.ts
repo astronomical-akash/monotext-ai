@@ -1,9 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
 
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
+  // In Vite, environment variables must use import.meta.env and be prefixed with VITE_
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
-    console.error("API Key not found in environment variables");
+    console.error("API Key not found. Make sure VITE_GEMINI_API_KEY is set in .env.local");
     return null;
   }
   return new GoogleGenAI({ apiKey });
@@ -60,27 +61,27 @@ export const formatTextWithGemini = async (htmlContent: string): Promise<string>
 };
 
 export const suggestTopics = async (existingTopics: string[]): Promise<string[]> => {
-    const ai = getAiClient();
-    if (!ai) return [];
+  const ai = getAiClient();
+  if (!ai) return [];
 
-    const prompt = `
+  const prompt = `
       Based on this list of existing topics: ${existingTopics.join(", ")},
       suggest 3 new, relevant, high-level topics for organizing a personal knowledge base.
       Return them as a JSON array of strings.
     `;
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: { responseMimeType: 'application/json' }
-        });
-        const text = response.text || "[]";
-        return JSON.parse(text);
-    } catch (e) {
-        console.error(e);
-        return [];
-    }
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+    const text = response.text || "[]";
+    return JSON.parse(text);
+  } catch (e) {
+    console.error(e);
+    return [];
+  }
 };
 
 export const generateContextualContent = async (
@@ -88,16 +89,16 @@ export const generateContextualContent = async (
   contextText: string,
   length: 'short' | 'medium' | 'long'
 ): Promise<string> => {
-    const ai = getAiClient();
-    if (!ai) throw new Error("API Key is missing.");
+  const ai = getAiClient();
+  if (!ai) throw new Error("API Key is missing.");
 
-    const lengthPrompt = {
-        short: "Keep it very brief, 1-2 sentences maximum.",
-        medium: "Write a standard paragraph, about 50-80 words.",
-        long: "Write a detailed explanation, 2-3 paragraphs."
-    }[length];
+  const lengthPrompt = {
+    short: "Keep it very brief, 1-2 sentences maximum.",
+    medium: "Write a standard paragraph, about 50-80 words.",
+    long: "Write a detailed explanation, 2-3 paragraphs."
+  }[length];
 
-    const prompt = `
+  const prompt = `
         You are a technical assistant helping to write a document.
         
         Context: The user is writing a document with the following content:
@@ -118,19 +119,19 @@ export const generateContextualContent = async (
         - **Block**: Use $$...$$ for main equations.
     `;
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-        });
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
 
-        let text = response.text || "";
-        text = text.replace(/^```html\s*/, '').replace(/```$/, '');
-        return text.trim();
-    } catch (error) {
-        console.error("Error generating content:", error);
-        throw error;
-    }
+    let text = response.text || "";
+    text = text.replace(/^```html\s*/, '').replace(/```$/, '');
+    return text.trim();
+  } catch (error) {
+    console.error("Error generating content:", error);
+    throw error;
+  }
 };
 
 export const generateLatexFromText = async (text: string): Promise<string> => {
