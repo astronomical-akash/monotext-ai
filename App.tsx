@@ -1,157 +1,113 @@
-
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import NoteList from './components/NoteList';
 import Editor from './components/Editor';
-import { Topic, Note, SubTopic, EditorSettings } from './types';
-import { saveDataToStorage, loadDataFromStorage } from './services/blobStorage';
-import { v4 as uuidv4 } from 'uuid'; // Since we can't install uuid, I'll use a simple generator function below
-
-// Simple UUID generator since we are in a no-package environment for demo
-const generateId = () => Math.random().toString(36).substr(2, 9);
-
-const INITIAL_TOPICS: Topic[] = [
-  {
-    id: '1',
-    name: 'Research',
-    subTopics: [
-      { id: 's1', name: 'Market Analysis', topicId: '1' },
-      { id: 's2', name: 'Competitors', topicId: '1' }
-    ]
-  },
-  {
-    id: '2',
-    name: 'Journal',
-    subTopics: [
-      { id: 's3', name: 'Ideas', topicId: '2' }
-    ]
-  }
-];
-
-const INITIAL_NOTES: Note[] = [
-  {
-    id: 'n1',
-    title: 'Q1 Market Trends',
-    content: '<p>The market is showing signs of <strong>strong growth</strong> in the tech sector.</p><ul><li>AI adoption is up 20%</li><li>Cloud costs are stabilizing</li></ul>',
-    subTopicId: 's1',
-    updatedAt: Date.now()
-  }
-];
+import { Auth } from './components/Auth';
+import { supabase } from './src/lib/supabase';
+import { Session } from '@supabase/supabase-js';
+import { EditorSettings, Note } from './types';
 
 const INITIAL_SETTINGS: EditorSettings = {
-  h1Size: 36, // 2.25rem * 16
-  h2Size: 28, // 1.75rem * 16
-  pSize: 16   // 1rem
+  h1Size: 36,
+  h2Size: 28,
+  pSize: 16
 };
 
+// Placeholder Note interface for Editor compatibility until fully refactored
+// We need to map DB 'nodes' to 'Note' structure expected by components
+const dbNodeToNote = (node: any): Note => ({
+  id: node.id,
+  title: node.title,
+  content: node.content || '',
+  subTopicId: node.parent_id || '', // mapping folder ID to subTopicId for compatibility
+  updatedAt: new Date(node.created_at).getTime()
+});
+
 const App: React.FC = () => {
-  const [topics, setTopics] = useState<Topic[]>(INITIAL_TOPICS);
-  const [notes, setNotes] = useState<Note[]>(INITIAL_NOTES);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+
   const [editorSettings, setEditorSettings] = useState<EditorSettings>(INITIAL_SETTINGS);
-  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
-  const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
-  const [selectedSubTopicId, setSelectedSubTopicId] = useState<string | null>(null);
+  // Navigation State
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [activeNote, setActiveNote] = useState<Note | null>(null);
 
-  // Mobile drawer state
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Load data from storage on mount
+  // Auth Handling
   useEffect(() => {
-    const savedData = loadDataFromStorage();
-    if (savedData) {
-      setTopics(savedData.topics || INITIAL_TOPICS);
-      setNotes(savedData.notes || INITIAL_NOTES);
-    }
-    setIsDataLoaded(true);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Auto-save data whenever topics or notes change
+  // Fetch Note Content when note is selected
   useEffect(() => {
-    if (isDataLoaded) {
-      saveDataToStorage({ topics, notes });
-    }
-  }, [topics, notes, isDataLoaded]);
-
-  // Derived state
-  const filteredNotes = useMemo(() => {
-    if (!selectedSubTopicId) return [];
-    return notes.filter(n => n.subTopicId === selectedSubTopicId).sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [notes, selectedSubTopicId]);
-
-  const activeSubTopic = useMemo(() => {
-    if (!selectedTopicId || !selectedSubTopicId) return undefined;
-    const topic = topics.find(t => t.id === selectedTopicId);
-    return topic?.subTopics.find(s => s.id === selectedSubTopicId);
-  }, [topics, selectedTopicId, selectedSubTopicId]);
-
-  const activeNote = useMemo(() => {
-    return notes.find(n => n.id === selectedNoteId);
-  }, [notes, selectedNoteId]);
-
-  // Actions
-  const handleAddTopic = (name: string) => {
-    const newTopic: Topic = { id: generateId(), name, subTopics: [] };
-    setTopics([...topics, newTopic]);
-  };
-
-  const handleAddSubTopic = (topicId: string, name: string) => {
-    const newSub: SubTopic = { id: generateId(), name, topicId };
-    setTopics(topics.map(t => {
-      if (t.id === topicId) {
-        return { ...t, subTopics: [...t.subTopics, newSub] };
+    const fetchNote = async () => {
+      if (!selectedNoteId) {
+        setActiveNote(null);
+        return;
       }
-      return t;
-    }));
-  };
 
-  const handleSelectSubTopic = (topicId: string, subTopicId: string) => {
-    setSelectedTopicId(topicId);
-    setSelectedSubTopicId(subTopicId);
-    setSelectedNoteId(null);
-    if (window.innerWidth < 768) setSidebarOpen(false);
-  };
+      const { data } = await supabase
+        .from('nodes')
+        .select('*')
+        .eq('id', selectedNoteId)
+        .single();
 
-  const handleCreateNote = () => {
-    if (!selectedSubTopicId) return;
-    const newNote: Note = {
-      id: generateId(),
-      title: '',
-      content: '<p></p>',
-      subTopicId: selectedSubTopicId,
-      updatedAt: Date.now()
+      if (data) {
+        setActiveNote(dbNodeToNote(data));
+      }
     };
-    setNotes([newNote, ...notes]);
-    setSelectedNoteId(newNote.id);
+
+    fetchNote();
+  }, [selectedNoteId]);
+
+  const handleUpdateNote = async (id: string, title: string, content: string) => {
+    // Optimistic update
+    if (activeNote) {
+      setActiveNote({ ...activeNote, title, content });
+    }
+    // Editor component handles the actual DB save, so we just update local state if needed
   };
 
-  const handleUpdateNote = (id: string, title: string, content: string) => {
-    setNotes(notes.map(n => n.id === id ? { ...n, title, content, updatedAt: Date.now() } : n));
-  };
+  if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
+
+  if (!session) return <Auth />;
 
   return (
     <div className="flex h-screen w-full overflow-hidden text-black bg-white">
-      {/* Sidebar - Hidden on mobile unless toggled */}
+      {/* Sidebar */}
       <div className={`${sidebarOpen ? 'block' : 'hidden'} md:block absolute md:relative z-20 h-full shadow-xl md:shadow-none`}>
         <Sidebar
-          topics={topics}
-          selectedTopicId={selectedTopicId}
-          selectedSubTopicId={selectedSubTopicId}
-          onSelectSubTopic={handleSelectSubTopic}
-          onAddTopic={handleAddTopic}
-          onAddSubTopic={handleAddSubTopic}
+          selectedFolderId={selectedFolderId}
+          onSelectFolder={(id) => {
+            setSelectedFolderId(id);
+            setSelectedNoteId(null);
+            if (window.innerWidth < 768) setSidebarOpen(false);
+          }}
           settings={editorSettings}
           onUpdateSettings={setEditorSettings}
         />
       </div>
 
-      {/* Backdrop for mobile */}
+      {/* Backdrop */}
       {sidebarOpen && <div className="md:hidden fixed inset-0 bg-black/20 z-10" onClick={() => setSidebarOpen(false)} />}
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Top bar for mobile only to show menu */}
+        {/* Mobile Header */}
         {!sidebarOpen && !selectedNoteId && (
           <div className="md:hidden p-4 border-b border-gray-200 flex items-center">
             <button onClick={() => setSidebarOpen(true)} className="mr-2">
@@ -170,11 +126,9 @@ const App: React.FC = () => {
           />
         ) : (
           <NoteList
-            subTopic={activeSubTopic}
-            notes={filteredNotes}
+            selectedFolderId={selectedFolderId}
             onSelectNote={(id) => setSelectedNoteId(id)}
-            onCreateNote={handleCreateNote}
-            onBack={() => { setSidebarOpen(true); setSelectedSubTopicId(null); }}
+            onBack={() => { setSidebarOpen(true); setSelectedFolderId(null); }}
           />
         )}
       </div>

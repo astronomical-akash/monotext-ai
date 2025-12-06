@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Bold, Italic, List, ListOrdered, Image as ImageIcon, Sparkles, Save, Type, Heading1, Heading2, Loader2, Download, X, Replace, Eye, EyeOff, Sigma } from 'lucide-react';
 import { formatTextWithGemini, generateContextualContent, generateLatexFromText } from '../services/geminiService';
+import { supabase } from '../src/lib/supabase';
 import { Note, EditorSettings } from '../types';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
@@ -19,6 +20,7 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
     const contentRef = useRef<HTMLDivElement>(null);
     const [title, setTitle] = useState(note.title);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState<number | null>(null);
 
     // AI Modal State
@@ -349,17 +351,64 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
         URL.revokeObjectURL(url);
     };
 
+    const handlePdfExport = () => {
+        if (!contentRef.current) return;
+
+        // Dynamic import or require to avoid SSR issues if any (though this is SPA)
+        // using functionality from html2pdf.js
+        const element = contentRef.current;
+        const opt = {
+            margin: [0.5, 0.5, 0.5, 0.5], // top, left, bottom, right
+            filename: `${title.replace(/\s+/g, '_')}.pdf`,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true },
+            jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+        };
+
+        // @ts-ignore
+        import('html2pdf.js').then(html2pdf => {
+            html2pdf.default().set(opt).from(element).save();
+        }).catch(err => console.error("Failed to load html2pdf", err));
+    };
+
     // Auto-save effect for local state sync
     useEffect(() => {
         const timer = setTimeout(() => {
             if (!isPreviewMode) {
                 triggerUpdate();
+                // We don't auto-save to cloud every keystroke to save requests, 
+                // but we update the local 'lastSaved' timestamp to show activity.
                 setLastSaved(Date.now());
             }
         }, 2000);
         return () => clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [title]);
+
+    const handleSave = async () => {
+        if (!contentRef.current) return;
+        setIsSaving(true);
+        try {
+            const content = contentRef.current.innerHTML;
+            const { error } = await supabase
+                .from('nodes')
+                .update({
+                    title: title,
+                    content: content
+                })
+                .eq('id', note.id);
+
+            if (error) throw error;
+
+            setLastSaved(Date.now());
+            // Optional: You could show a toast here
+        } catch (error) {
+            console.error('Error saving document:', error);
+            alert('Failed to save document!');
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     return (
         <div className="flex flex-col h-full bg-white relative">
@@ -382,8 +431,25 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
                 <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 p-1 rounded-lg shadow-sm overflow-x-auto">
                     {/* Toolbar Buttons - Disable when in preview mode */}
                     <div className={isPreviewMode ? 'opacity-50 pointer-events-none flex items-center gap-1' : 'flex items-center gap-1'}>
+                        <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
+                            <select
+                                onChange={(e) => handleCommand('fontName', e.target.value)}
+                                className="text-sm border border-gray-200 rounded p-1 bg-white outline-none hover:border-gray-400 w-32"
+                                title="Font Family"
+                                defaultValue="Inter"
+                            >
+                                <option value="Inter">Sans (Default)</option>
+                                <option value="Times New Roman">Times New Roman</option>
+                                <option value="'EB Garamond', serif">Garamond</option>
+                                <option value="'Libre Caslon Text', serif">Caslon</option>
+                            </select>
+                        </div>
+
                         <ToolbarBtn onClick={() => handleCommand('formatBlock', 'H1')} icon={<Heading1 size={18} />} title="Heading 1" />
                         <ToolbarBtn onClick={() => handleCommand('formatBlock', 'H2')} icon={<Heading2 size={18} />} title="Heading 2" />
+                        <ToolbarBtn onClick={() => handleCommand('formatBlock', 'H3')} icon={<span className="font-bold text-sm">H3</span>} title="Heading 3" />
+                        <ToolbarBtn onClick={() => handleCommand('formatBlock', 'H4')} icon={<span className="font-bold text-xs uppercase">Sub</span>} title="Subheading (H4)" />
+
                         <div className="w-px h-6 bg-gray-300 mx-1"></div>
                         <ToolbarBtn onClick={() => handleCommand('bold')} icon={<Bold size={18} />} title="Bold" />
                         <ToolbarBtn onClick={() => handleCommand('italic')} icon={<Italic size={18} />} title="Italic" />
@@ -409,9 +475,22 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
                     >
                         {isPreviewMode ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
+
+                    {/* Export Buttons */}
+                    <div className="w-px h-6 bg-gray-300 mx-1"></div>
+                    <ToolbarBtn onClick={handleExport} icon={<span className="text-xs font-bold">HTML</span>} title="Export HTML" />
+                    <ToolbarBtn onClick={handlePdfExport} icon={<Download size={18} />} title="Export PDF" />
                 </div>
 
                 <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleSave}
+                        disabled={isSaving}
+                        className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50 transition-all shadow-md text-sm font-medium"
+                    >
+                        {isSaving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                        <span>{isSaving ? 'Saving...' : 'Save'}</span>
+                    </button>
                     <button
                         onClick={handleAiFormat}
                         disabled={isProcessing || isPreviewMode}
