@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Bold, Italic, List, ListOrdered, Image as ImageIcon, Sparkles, Save, Type, Heading1, Heading2, Loader2, Download, X, Replace, Eye, EyeOff, Sigma } from 'lucide-react';
+import { Bold, Italic, List, ListOrdered, Image as ImageIcon, Sparkles, Save, Type, Heading1, Heading2, Loader2, Download, X, Replace, Eye, EyeOff, Sigma, FileText, Scaling } from 'lucide-react';
+import TurndownService from 'turndown';
 import { formatTextWithGemini, generateContextualContent, generateLatexFromText } from '../services/geminiService';
 import { supabase } from '../src/lib/supabase';
 import { Note, EditorSettings } from '../types';
@@ -45,6 +46,14 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
     const [latexQuery, setLatexQuery] = useState('');
     const [latexGenerating, setLatexGenerating] = useState(false);
     const savedLatexRange = useRef<Range | null>(null);
+
+    // Markdown View State
+    const [isMarkdownView, setIsMarkdownView] = useState(false);
+    const [markdownContent, setMarkdownContent] = useState('');
+
+    // Image Resize State
+    const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(null);
+    const [resizePopoverPos, setResizePopoverPos] = useState<{ top: number, left: number } | null>(null);
 
     // Sync initial content
     useEffect(() => {
@@ -292,12 +301,93 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
     };
 
     const handleOpenReplace = () => {
-        if (isPreviewMode) return;
+        if (isPreviewMode || isMarkdownView) return;
         const selection = window.getSelection();
         const text = selection ? selection.toString() : '';
         setFindTerm(text);
         setReplaceTerm('');
         setShowReplaceModal(true);
+    };
+
+    const handleToggleMarkdown = () => {
+        if (!contentRef.current) return;
+
+        if (isMarkdownView) {
+            setIsMarkdownView(false);
+        } else {
+            const turndownService = new TurndownService();
+            // Simple configuration to keep it clean
+            turndownService.addRule('strikethrough', {
+                filter: (node) => ['DEL', 'S', 'STRIKE'].includes(node.nodeName),
+                replacement: function (content) {
+                    return '~' + content + '~'
+                }
+            });
+            const md = turndownService.turndown(contentRef.current.innerHTML);
+            setMarkdownContent(md);
+            setIsMarkdownView(true);
+            setIsPreviewMode(false);
+            setSelectedImage(null);
+        }
+    };
+
+    const handleEditorClick = (e: React.MouseEvent) => {
+        if (isPreviewMode || isMarkdownView) return;
+
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'IMG') {
+            const img = target as HTMLImageElement;
+            setSelectedImage(img);
+
+            // Calculate position for popover (centered above image)
+            const rect = img.getBoundingClientRect();
+            // Account for scrolling and offset
+            // We'll use fixed positioning for simplicity given the overflow parents
+            setResizePopoverPos({
+                top: rect.top - 50, // 50px above
+                left: rect.left + (rect.width / 2)
+            });
+        } else {
+            setSelectedImage(null);
+            setResizePopoverPos(null);
+        }
+    };
+
+    // Update popover position on scroll or resize
+    useEffect(() => {
+        if (selectedImage) {
+            const updatePos = () => {
+                const rect = selectedImage.getBoundingClientRect();
+                setResizePopoverPos({
+                    top: rect.top - 50,
+                    left: rect.left + (rect.width / 2)
+                });
+            };
+
+            window.addEventListener('scroll', updatePos, true); // true for capture (handling div scrolls)
+            window.addEventListener('resize', updatePos);
+
+            return () => {
+                window.removeEventListener('scroll', updatePos, true);
+                window.removeEventListener('resize', updatePos);
+            };
+        }
+    }, [selectedImage]);
+
+    const handleResizeImage = (percentage: number) => {
+        if (selectedImage) {
+            selectedImage.style.width = percentage === 0 ? 'auto' : `${percentage}%`;
+            selectedImage.style.height = 'auto'; // Maintain aspect ratio
+            triggerUpdate();
+            // Re-calculate pos just in case
+            setTimeout(() => {
+                const rect = selectedImage.getBoundingClientRect();
+                setResizePopoverPos({
+                    top: rect.top - 50,
+                    left: rect.left + (rect.width / 2)
+                });
+            }, 0);
+        }
     };
 
     const handleReplace = () => {
@@ -358,11 +448,11 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
         // using functionality from html2pdf.js
         const element = contentRef.current;
         const opt = {
-            margin: [0.5, 0.5, 0.5, 0.5], // top, left, bottom, right
+            margin: [0.5, 0.5, 0.5, 0.5] as [number, number, number, number], // top, left, bottom, right
             filename: `${title.replace(/\s+/g, '_')}.pdf`,
-            image: { type: 'jpeg', quality: 0.98 },
+            image: { type: 'jpeg' as const, quality: 0.98 },
             html2canvas: { scale: 2, useCORS: true },
-            jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+            jsPDF: { unit: 'in' as const, format: 'letter' as const, orientation: 'portrait' as const }
         };
 
         // @ts-ignore
@@ -430,7 +520,7 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
 
                 <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 p-1 rounded-lg shadow-sm overflow-x-auto">
                     {/* Toolbar Buttons - Disable when in preview mode */}
-                    <div className={isPreviewMode ? 'opacity-50 pointer-events-none flex items-center gap-1' : 'flex items-center gap-1'}>
+                    <div className={(isPreviewMode || isMarkdownView) ? 'opacity-50 pointer-events-none flex items-center gap-1' : 'flex items-center gap-1'}>
                         <div className="flex items-center gap-1 border-r border-gray-300 pr-2 mr-2">
                             <select
                                 onChange={(e) => handleCommand('fontName', e.target.value)}
@@ -471,9 +561,18 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
                         onClick={handleTogglePreview}
                         onMouseDown={(e) => e.preventDefault()}
                         title={isPreviewMode ? "Edit Mode" : "Preview Mode (Render LaTeX)"}
-                        className={`p-2 rounded transition-colors flex items-center justify-center ${isPreviewMode ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-200 text-gray-700'}`}
+                        disabled={isMarkdownView}
+                        className={`p-2 rounded transition-colors flex items-center justify-center ${isPreviewMode ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-200 text-gray-700'} ${isMarkdownView ? 'opacity-30' : ''}`}
                     >
                         {isPreviewMode ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                    <button
+                        onClick={handleToggleMarkdown}
+                        onMouseDown={(e) => e.preventDefault()}
+                        title={isMarkdownView ? "Back to Editor" : "View Markdown Source"}
+                        className={`p-2 rounded transition-colors flex items-center justify-center ${isMarkdownView ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-200 text-gray-700'}`}
+                    >
+                        <FileText size={18} />
                     </button>
 
                     {/* Export Buttons */}
@@ -507,20 +606,27 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
 
             {/* Editor Area */}
             <div className="flex-1 overflow-y-auto p-8 md:px-24">
-                <div
-                    ref={contentRef}
-                    contentEditable={!isPreviewMode}
-                    className={`editor-content min-h-[500px] outline-none text-gray-800 ${isPreviewMode ? 'bg-gray-50 p-4 rounded border border-transparent' : ''}`}
-                    style={editorStyles}
-                    onInput={triggerUpdate}
-                    onBlur={triggerUpdate}
-                    onKeyDown={handleKeyDown}
-                    data-placeholder={isPreviewMode ? "" : "Start typing... press '@' for AI, use $...$ for Math"}
-                />
+                {isMarkdownView ? (
+                    <div className="w-full h-full min-h-[500px] p-4 bg-gray-50 font-mono text-sm whitespace-pre-wrap border rounded shadow-inner overflow-auto">
+                        {markdownContent}
+                    </div>
+                ) : (
+                    <div
+                        ref={contentRef}
+                        contentEditable={!isPreviewMode}
+                        className={`editor-content min-h-[500px] outline-none text-gray-800 ${isPreviewMode ? 'bg-gray-50 p-4 rounded border border-transparent' : ''}`}
+                        style={editorStyles}
+                        onInput={triggerUpdate}
+                        onBlur={triggerUpdate}
+                        onKeyDown={handleKeyDown}
+                        onClick={handleEditorClick}
+                        data-placeholder={isPreviewMode ? "" : "Start typing... press '@' for AI, use $...$ for Math"}
+                    />
+                )}
             </div>
 
             <div className="p-2 text-xs text-gray-400 border-t border-gray-100 text-center flex justify-between px-4">
-                <span>{isPreviewMode ? 'Preview Mode (Read Only)' : 'Edit Mode'}</span>
+                <span>{isPreviewMode ? 'Preview Mode (Read Only)' : isMarkdownView ? 'Markdown View' : 'Edit Mode'}</span>
                 {lastSaved ? `Last synced ${new Date(lastSaved).toLocaleTimeString()}` : 'Unsaved changes'}
             </div>
 
@@ -736,6 +842,30 @@ const Editor: React.FC<EditorProps> = ({ note, onUpdate, onBack, settings }) => 
                             </div>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Image Resize Popover */}
+            {selectedImage && resizePopoverPos && !isPreviewMode && !isMarkdownView && (
+                <div
+                    className="fixed z-50 bg-white shadow-xl border border-gray-200 rounded-lg p-2 flex items-center gap-2 animate-in fade-in zoom-in duration-200"
+                    style={{
+                        top: `${resizePopoverPos.top}px`,
+                        left: `${resizePopoverPos.left}px`,
+                        transform: 'translate(-50%, -100%)' // Center horizontally, put above
+                    }}
+                >
+                    <div className="text-xs font-bold text-gray-400 mr-1 flex items-center gap-1">
+                        <Scaling size={12} />
+                        Resize
+                    </div>
+                    <button onClick={() => handleResizeImage(25)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-xs rounded border border-gray-200">25%</button>
+                    <button onClick={() => handleResizeImage(50)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-xs rounded border border-gray-200">50%</button>
+                    <button onClick={() => handleResizeImage(75)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-xs rounded border border-gray-200">75%</button>
+                    <button onClick={() => handleResizeImage(100)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-xs rounded border border-gray-200">100%</button>
+                    <div className="w-px h-4 bg-gray-300 mx-1"></div>
+                    <button onClick={() => handleResizeImage(0)} className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-xs rounded border border-gray-200">Auto</button>
+                    <button onClick={() => setSelectedImage(null)} className="ml-1 p-1 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded"><X size={12} /></button>
                 </div>
             )}
         </div>
